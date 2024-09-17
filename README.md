@@ -28,6 +28,13 @@ or with Pipenv:
 $ pipenv install --dev
 $ pipenv shell
 ```
+generate API key for replicate:
+1. go on https://replicate.com/account/api-tokens
+2. sign in with GitHub
+3. provide a token name and then create token
+4. copy token key then in the repository, create a file named `api.key`
+5. paste the token key in the file and save
+
 generate fake data then run:
 ```
 $ flask forge

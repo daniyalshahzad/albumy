@@ -6,11 +6,16 @@
     :license: MIT, see LICENSE for more details.
 """
 import os
+import sys
+
+import requests
+
 
 from flask import render_template, flash, redirect, url_for, current_app, \
     send_from_directory, request, abort, Blueprint
 from flask_login import login_required, current_user
 from sqlalchemy.sql.expression import func
+import replicate
 
 from albumy.decorators import confirm_required, permission_required
 from albumy.extensions import db
@@ -21,6 +26,60 @@ from albumy.utils import rename_image, resize_image, redirect_back, flash_errors
 
 main_bp = Blueprint('main', __name__)
 
+def get_image_caption(image_path):
+    '''
+    Creates a caption for the given uploaded image, using the Bootstrapping Language-Image Pre-training model
+    input - image_path: path for the image
+    output - image caption
+    '''
+
+    # Load api key that is required for this feature. See README for setup instructions.
+    f = open("api.key", "r")
+    word = f.read().rstrip()
+    # Using the default api
+    os.environ["REPLICATE_API_TOKEN"] = str(word)
+
+    # API call to run the image through the Bootstrapping Language-Image Pre-training model
+    # For more information on this model, visit: https://replicate.com/salesforce/blip/api
+    output = replicate.run(
+        "salesforce/blip:2e1dddc8621f72155f24cf2e0adbde548458d3cab9f00c0139eea840d0ac4746",
+        input={"image": open(image_path, "rb")}
+    )
+    return output[9:].rstrip()
+
+def get_image_detection(image_path, photo):
+    '''
+    Detect the objects within the given uploaded image and record them as tags for the image, using API4AI's image detector
+    input - image_path: path for the image
+          - photo: image described in class Photo
+    output - modified photo with updated tags of objects if there are objects detected in the image
+    '''
+
+    with open(image_path, 'rb') as image_file:
+        response = requests.post(
+            'https://general-detection.p.rapidapi.com/v1/results',
+            headers={'A4A-CLIENT-APP-ID': 'sample'},
+            files={'image': (os.path.basename(image_path), image_file)}
+        )
+
+    # Parse response and objects with confidence > 0.5.
+    for x in response.json()['results'][0]['entities'][0]['objects']:  # noqa
+        if list(x['entities'][0]['classes'].values())[0] > 0.5:
+            # Obtain object name
+            name = list((x['entities'][0]['classes'].keys()))[0]
+            # Check if tag already exists
+            tag = Tag.query.filter_by(name=name).first()
+            if tag is None:
+                # If the tag is not yet recorded before, create the tag
+                tag = Tag(name=name)
+                db.session.add(tag)
+                db.session.commit()
+            if tag not in photo.tags:
+                # If the tag is not yet stored as the photo's tag, store the tag as photo's tag
+                photo.tags.append(tag)
+                db.session.commit()
+    # Return updated photo, with tags if there are detected objects
+    return photo
 
 @main_bp.route('/')
 def index():
@@ -125,12 +184,15 @@ def upload():
         f.save(os.path.join(current_app.config['ALBUMY_UPLOAD_PATH'], filename))
         filename_s = resize_image(f, filename, current_app.config['ALBUMY_PHOTO_SIZE']['small'])
         filename_m = resize_image(f, filename, current_app.config['ALBUMY_PHOTO_SIZE']['medium'])
+        desc = get_image_caption(os.path.join(current_app.config['ALBUMY_UPLOAD_PATH'], filename))
         photo = Photo(
             filename=filename,
+            description=desc,
             filename_s=filename_s,
             filename_m=filename_m,
             author=current_user._get_current_object()
         )
+        photo = get_image_detection(os.path.join(current_app.config['ALBUMY_UPLOAD_PATH'], filename), photo)
         db.session.add(photo)
         db.session.commit()
     return render_template('main/upload.html')
